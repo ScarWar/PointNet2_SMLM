@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import open3d as o3d
 from scipy.spatial.transform import Rotation as R
 
 
@@ -8,29 +9,23 @@ def line(point1, point2, const_dict):
     length = math.sqrt((point1[0] - point2[0]) ** 2 +
                        (point1[1] - point2[1]) ** 2 + (point1[2] - point2[2]) ** 2)
 
-    l = np.linspace(0, length, num=int(
-        round(length * const_dict['ProteinDensity'])))
-    x = point1[0] + l * (point2[0] - point1[0]) / length
-    y = point1[1] + l * (point2[1] - point1[1]) / length
-    z = point1[2] + l * (point2[2] - point1[2]) / length
+    lin = np.linspace(0, length, num=int(length * const_dict['ProteinDensity']))
+    x = point1[0] + lin * (point2[0] - point1[0]) / length
+    y = point1[1] + lin * (point2[1] - point1[1]) / length
+    z = point1[2] + lin * (point2[2] - point1[2]) / length
 
     return x, y, z
 
 
-def backround_noise(p, const_dict, xx, yy, zz):
-    l = len(p)
-    x_mean = 0
-    y_mean = 0
-    z_mean = 0
-    for i in range(len(p)):
-        pp = p[i]
-        x_mean = x_mean + pp[0]
-        y_mean = x_mean + pp[1]
-        z_mean = x_mean + pp[2]
-
-    x_mean = x_mean / l
-    y_mean = y_mean / l
-    z_mean = z_mean / l
+def background_noise(p, const_dict, xx, yy, zz):
+    points = np.c_[xx, yy, zz]
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    # bbox: AxisAlignedBoundingBox = pcd.get_axis_aligned_bounding_box()
+    # box: np.array = np.array(bbox.get_box_points())
+    # ext_box: np.array = box * 1.2
+    # box = ext_box + (ext_box.mean() - box.mean())
+    center = pcd.get_center()
 
     # length in nm
     image_length = 120
@@ -46,9 +41,9 @@ def backround_noise(p, const_dict, xx, yy, zz):
     z = []
 
     for i in range(round(NoiseDensity * image_volume)):
-        x.append(random.uniform(x_mean - image_length / 2, x_mean + image_length / 2))
-        y.append(random.uniform(y_mean - image_length / 2, y_mean + image_length / 2))
-        z.append(random.uniform(z_mean - image_length / 2, z_mean + image_length / 2))
+        x.append(random.uniform(center[0] - image_length / 2, center[0] + image_length / 2))
+        y.append(random.uniform(center[1] - image_length / 2, center[1] + image_length / 2))
+        z.append(random.uniform(center[2] - image_length / 2, center[2] + image_length / 2))
 
     xx = np.concatenate((xx, x))
     yy = np.concatenate((yy, y))
@@ -66,7 +61,7 @@ def rect(p1, p2, p3, p4, const_dict):
     y0 = np.concatenate((y0, y1, y2, y3))
     z0 = np.concatenate((z0, z1, z2, z3))
     p = [p1, p2, p3, p4]
-    x0, y0, z0 = backround_noise(p, const_dict, x0, y0, z0)
+    x0, y0, z0 = background_noise(p, const_dict, x0, y0, z0)
     return x0, y0, z0
 
 
@@ -78,7 +73,6 @@ def triangle(p1, p2, p3, const_dict):
     y = np.concatenate((y, y1, y2))
     z = np.concatenate((z, z1, z2))
     p = [p1, p2, p3]
-    x, y, z = backround_noise(p, const_dict, x, y, z)
     return x, y, z
 
 
@@ -124,38 +118,48 @@ def rotate(x, y, z):
 
 def ellipse(a, b, const_dict):
     ProteinDensity = const_dict['ProteinDensity']
+
+    # Calculating perimeter using infinite series
     h = ((a - b) / (a + b)) ** 2
     perimeter = math.pi * (a + b) * (64 - 3 * h ** 2) / (64 + 16 * h)
-    l = np.linspace(0, math.pi * 2, num=int(round(ProteinDensity * perimeter)))
-    x = a * np.cos(l)
-    y = b * np.sin(l)
-    z = np.zeros_like(l)
+
+    # Calculate ellipse points
+    lin = np.linspace(0, math.pi * 2, num=int(ProteinDensity * perimeter))
+    x = a * np.cos(lin)
+    y = b * np.sin(lin)
+    z = np.zeros_like(lin)
     p = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-    x, y, z = backround_noise(p, const_dict, x, y, z)
+    x, y, z = background_noise(p, const_dict, x, y, z)
+
+    # print(f'A = {a}, B = {b}, P = {perimeter}, Points = {lin.__len__()}')
+
     return x, y, z
 
 
 def create_triangles(const_dict, n=100):
-    min_len = 20  # nm
-    max_len = 80
+    min_len = 60  # nm
+    max_len = 70
     shapes = []
     for _ in range(n):
         # rib >20 nm  and <50
         p1 = [0, 0, 0]
         p2 = [0, 0, random.uniform(min_len, max_len)]
-        p3 = [0, random.uniform(p2[2] * 0.5, p2[2] * 1.5),
-              random.uniform(0, 1.2 * p2[2])]
-        xdata, ydata, zdata = triangle(p1, p2, p3, const_dict)
-        xdata, ydata, zdata = rotate(xdata, ydata, zdata)
-        xdata, ydata, zdata = add_noise(xdata, ydata, zdata, const_dict)
-        shapes.append(np.array([xdata, ydata, zdata]))
+        p3 = [0, random.gauss((min_len + max_len) / 2, (max_len - min_len)),
+              random.gauss(1.7 * p2[2], p2[2] / 2)]
+        x, y, z = triangle(p1, p2, p3, const_dict)
+
+        x, y, z = add_noise(x, y, z, const_dict)
+        x, y, z = background_noise([], const_dict, x, y, z)
+        x, y, z = rotate(x, y, z)
+
+        shapes.append(np.array([x, y, z]))
 
     return shapes
 
 
 def create_rects(const_dict, n=100):
-    min_len = 20  # nm
-    max_len = 80
+    min_len = 60  # nm
+    max_len = 70
     shapes = []
     for _ in range(n):
         # rib >20 nm  and <50
@@ -166,10 +170,10 @@ def create_rects(const_dict, n=100):
         p4 = [random.uniform(-0.5 * min_len, 0.5 * min_len),
               random.uniform(0.7 * p3[1], 1.3 * p3[1]), random.uniform(-0.5 * min_len, 0.5 * min_len)]
 
-        xdata, ydata, zdata = rect(p1, p2, p3, p4, const_dict)
-        xdata, ydata, zdata = rotate(xdata, ydata, zdata)
-        xdata, ydata, zdata = add_noise(xdata, ydata, zdata, const_dict)
-        shapes.append(np.array([xdata, ydata, zdata]))
+        x, y, z = rect(p1, p2, p3, p4, const_dict)
+        x, y, z = rotate(x, y, z)
+        x, y, z = add_noise(x, y, z, const_dict)
+        shapes.append(np.array([x, y, z]))
 
     return shapes
 
@@ -178,18 +182,17 @@ import random
 
 
 def create_ellipses(const_dict, n=100):
-    min_len = 30
-    max_len = 70
+    min_len = 40
+    max_len = 50
     shapes = []
 
     for _ in range(n):
         a = random.uniform(min_len, max_len)
         b = random.uniform(min_len, max_len)
-        xdata, ydata, zdata = ellipse(a, b, const_dict)
-
-        xdata, ydata, zdata = rotate(xdata, ydata, zdata)
-        xdata, ydata, zdata = add_noise(xdata, ydata, zdata, const_dict)
-        shapes.append(np.array([xdata, ydata, zdata]))
+        x, y, z = ellipse(a, b, const_dict)
+        x, y, z = add_noise(x, y, z, const_dict)
+        x, y, z = rotate(x, y, z)
+        shapes.append(np.array([x, y, z]))
 
     return shapes
 
